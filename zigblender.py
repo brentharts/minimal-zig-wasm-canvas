@@ -2,6 +2,13 @@
 import os, sys, subprocess, base64, webbrowser
 _thisdir = os.path.split(os.path.abspath(__file__))[0]
 
+if sys.platform == 'win32':
+	BLENDER = 'C:/Program Files/Blender Foundation/Blender 4.2/blender.exe'
+elif sys.platform == 'darwin':
+	BLENDER = '/Applications/Blender.app/Contents/MacOS/Blender'
+else:
+	BLENDER = 'blender'
+
 ZIG = os.path.join(_thisdir, 'zig-linux-x86_64-0.13.0/zig')
 
 if not os.path.isfile(ZIG):
@@ -133,10 +140,10 @@ export fn main() void {
 '''
 
 
-def build():
+def build(zig):
 	name = 'test-wasm-foo'
 	tmp = '/tmp/%s.zig' % name
-	open(tmp, 'w').write(TEST_WASM_CANVAS)
+	open(tmp, 'w').write(zig)
 	cmd = [
 		ZIG, 'build-exe', 
 		'-O', 'ReleaseSmall', 
@@ -175,6 +182,12 @@ def build():
 	open(out,'w').write('\n'.join(o))
 	webbrowser.open(out)
 
+try:
+	import bpy
+except:
+	bpy = None
+
+
 if __name__=='__main__':
 	if '--help' in sys.argv:
 		subprocess.check_call([ZIG, '--help'])
@@ -187,10 +200,119 @@ if __name__=='__main__':
 				print(ln)
 		sys.exit()
 
-	elif '--native' in sys.argv:
+	elif '--test-native' in sys.argv:
 		test_native()
-	else:
+		sys.exit()
+	elif '--test-wasm' in sys.argv:
 		test_wasm()
+		sys.exit()
+	elif '--test-wasm-canvas' in sys.argv:
+		build(TEST_WASM_CANVAS)
+	elif bpy:
+		pass
+	else:
+		cmd = [BLENDER]
+		for arg in sys.argv:
+			if arg.endswith('.blend'):
+				cmd.append(arg)
+				break
+		cmd +=['--python-exit-code', '1', '--python', __file__]
+		exargs = []
+		for arg in sys.argv:
+			if arg.startswith('--'):
+				exargs.append(arg)
+		if exargs:
+			cmd.append('--')
+			cmd += exargs
+		print(cmd)
+		subprocess.check_call(cmd)
+		sys.exit()
 
-	build()
+## in blender ##
+import math, mathutils
+from random import random, uniform
 
+@bpy.utils.register_class
+class C3Export(bpy.types.Operator):
+	bl_idname = "c3.export_wasm"
+	bl_label = "C3 Export WASM"
+	@classmethod
+	def poll(cls, context):
+		return True
+	def execute(self, context):
+		build_wasm(context.world)
+		return {"FINISHED"}
+
+
+@bpy.utils.register_class
+class ZigWorldPanel(bpy.types.Panel):
+	bl_idname = "WORLD_PT_ZigWorld_Panel"
+	bl_label = "Zig Export"
+	bl_space_type = "PROPERTIES"
+	bl_region_type = "WINDOW"
+	bl_context = "world"
+
+	def draw(self, context):
+		self.layout.operator("zig.export_wasm", icon="CONSOLE")
+
+
+def safename(ob):
+	return ob.name.lower().replace('.', '_')
+
+ZIG_HEADER = '''
+extern fn rect(x:c_int,y:c_int, w:c_int,h:c_int, r:u8,g:u8,b:u8, alpha:f32 ) void;
+
+'''
+
+def blender_to_c3(world):
+	head = [ZIG_HEADER]
+	setup = []
+	draw = ['export fn main() void {']
+	for ob in bpy.data.objects:
+		if ob.hide_get(): continue
+		print(ob)
+		sname = safename(ob)
+		if ob.type=='MESH':
+			if len(ob.data.vertices)==4: ## assume plane
+				x,y,z = ob.location
+				z = int(-z)
+				x = int(x)
+
+				sx,sy,sz = ob.scale
+				w = int(sx*2)
+				h = int(sy*2)
+
+				r,g,b,a = ob.color
+				r = int(r*255)
+				g = int(g*255)
+				b = int(b*255)
+				draw += [
+					'	rect( %s,%s, %s,%s, %s,%s,%s, %s);' %(x,z,w,h,r,g,b,a),
+
+				]
+
+	draw.append('}')
+
+	return '\n'.join(head+setup+draw)
+
+
+def build_wasm(world):
+	zig = blender_to_c3(world)
+	print(zig)
+	build(zig)
+
+
+def test_scene():
+	for y in range(8):
+		for x in range(8):
+			bpy.ops.mesh.primitive_plane_add()
+			ob = bpy.context.active_object
+			ob.location.x = x*64
+			ob.location.z = -y*64
+			ob.scale = [16,16,0]
+			ob.rotation_euler.x = math.pi/2
+			ob.color = [1,0,y*0.1,1]
+
+if __name__=='__main__':
+	test_scene()
+	build_wasm(bpy.data.worlds[0])
