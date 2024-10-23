@@ -30,7 +30,6 @@ def test_native():
 	cmd = [ZIG, 'build-exe', tmp]
 	print(cmd)
 	subprocess.check_call(cmd, cwd='/tmp')
-
 	cmd = ['/tmp/test-zig']
 	print(cmd)
 	subprocess.check_call(cmd)
@@ -39,15 +38,6 @@ TEST_WASM = r'''
 extern fn foo() void;
 pub fn main() !void {
 	foo();
-}
-'''
-
-TEST_WASM_MIN = r'''
-export fn myfunc() c_int {
-	return 1;
-}
-pub fn main() void{
-	
 }
 '''
 
@@ -99,9 +89,7 @@ class api {
 			window.requestAnimationFrame(f)
 		});
 	}
-	foo() {
-		window.alert("hello from zig")
-	}
+
 	rect(x,y,w,h, r,g,b,a){
 		this.ctx.fillStyle='rgba('+r+','+g+','+b+','+a+')';
 		this.ctx.fillRect(x,y,w,h)
@@ -110,7 +98,7 @@ class api {
 
 }
 
-var $ = new api();
+var $=new api();
 '''
 
 JS_DECOMP = '''
@@ -131,19 +119,16 @@ $d($wasm).then((r)=>{
 
 '''
 
-TEST_WASM_JS = r'''
-extern fn foo() void;
-
-export fn main() void {
-	foo();
-}
-'''
 
 TEST_WASM_CANVAS = r'''
 extern fn rect(x:c_int,y:c_int, w:c_int,h:c_int, r:u8,g:u8,b:u8, alpha:f32 ) void;
 
 export fn main() void {
-	rect(0,0, 320,240, 200,0,0, 1.0);
+	for (0..8) |y| {
+		for (0..8) |x| {
+			rect( @intCast(x*64),@intCast(y*64), 32,32, 200,0,0, 1.0);
+		}
+	}
 }
 '''
 
@@ -151,7 +136,6 @@ export fn main() void {
 def build():
 	name = 'test-wasm-foo'
 	tmp = '/tmp/%s.zig' % name
-	#open(tmp, 'w').write(TEST_WASM_JS)
 	open(tmp, 'w').write(TEST_WASM_CANVAS)
 	cmd = [
 		ZIG, 'build-exe', 
@@ -208,16 +192,5 @@ if __name__=='__main__':
 	else:
 		test_wasm()
 
-
-	#cmd = [ZIG, 'build', '--verbose']
-	#subprocess.check_call(cmd)
-	#minimal-zig-wasm-canvas/build.zig:13:33: error: no field named 'path' in union 'Build.LazyPath'
-	#        .root_source_file = .{ .path = "src/checkerboard.zig" },
-	#                                ^~~~
-	#zig-linux-x86_64-0.13.0/lib/std/Build.zig:2171:22: note: union declared here
-	#pub const LazyPath = union(enum) {                     ^~~~~
-	#referenced by:
-	#    runBuild__anon_8819: zig-linux-x86_64-0.13.0/lib/std/Build.zig:2116:27
-	#    main: zig-linux-x86_64-0.13.0/lib/compiler/build_runner.zig:301:29
 	build()
 
