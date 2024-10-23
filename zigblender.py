@@ -110,8 +110,6 @@ class api {
 		this.canvas.height=h
 	}
 
-
-
 }
 
 var $=new api();
@@ -190,7 +188,6 @@ def build(zig, memsize=4):
 		'<body>',
 		'<canvas id="$"></canvas>',
 		'<script>', 
-		#JS_API,
 		'var $0="%s"' % jsb,
 		'var $1="%s"' % b,
 		JS_DECOMP,
@@ -258,6 +255,47 @@ if __name__=='__main__':
 import math, mathutils
 from random import random, uniform
 
+MAX_SCRIPTS_PER_OBJECT = 8
+
+for i in range(MAX_SCRIPTS_PER_OBJECT):
+	setattr(
+		bpy.types.Object,
+		"zig_script" + str(i),
+		bpy.props.PointerProperty(name="script%s" % i, type=bpy.types.Text),
+	)
+	setattr(
+		bpy.types.Object,
+		"zig_script%s_disable" %i,
+		bpy.props.BoolProperty(name="disable"),
+	)
+
+@bpy.utils.register_class
+class ZigObjectPanel(bpy.types.Panel):
+	bl_idname = "OBJECT_PT_Zig_Object_Panel"
+	bl_label = "Zig Object Options"
+	bl_space_type = "PROPERTIES"
+	bl_region_type = "WINDOW"
+	bl_context = "object"
+
+	def draw(self, context):
+		if not context.active_object: return
+		ob = context.active_object
+
+		self.layout.label(text="Attach Zig Scripts")
+		foundUnassignedScript = False
+		for i in range(MAX_SCRIPTS_PER_OBJECT):
+			hasProperty = (
+				getattr(ob, "zig_script" + str(i)) != None
+			)
+			if hasProperty or not foundUnassignedScript:
+				row = self.layout.row()
+				row.prop(ob, "zig_script" + str(i))
+				row.prop(ob, "zig_script%s_disable"%i)
+			if not foundUnassignedScript:
+				foundUnassignedScript = not hasProperty
+
+
+
 @bpy.utils.register_class
 class ZigExport(bpy.types.Operator):
 	bl_idname = "zig.export_wasm"
@@ -284,6 +322,20 @@ class ZigWorldPanel(bpy.types.Panel):
 
 def safename(ob):
 	return ob.name.lower().replace('.', '_')
+
+def get_scripts(ob):
+	scripts = []
+	for i in range(MAX_SCRIPTS_PER_OBJECT):
+		if getattr(ob, "zig_script%s_disable" %i): continue
+		txt = getattr(ob, "zig_script" + str(i))
+		if txt: scripts.append(txt)
+	return scripts
+
+def has_scripts(ob):
+	for i in range(MAX_SCRIPTS_PER_OBJECT):
+		txt = getattr(ob, "zig_script" + str(i))
+		if txt: return True
+	return False
 
 
 ZIG_HEADER = '''
@@ -353,11 +405,21 @@ def blender_to_zig(world):
 					'objects[%s].scl=Vec2D{.x=%s,.y=%s};' % (idx,w,h),
 					'objects[%s].clr=Color{.r=%s,.g=%s,.b=%s,.a=%s};' % (idx,r,g,b,a),
 				]
-				draw += [
-					#'	rect( %s,%s, %s,%s, %s,%s,%s, %s);' %(x,z,w,h,r,g,b,a),
-					'	self = objects[%s];' % idx,
-					'	rect(@intFromFloat(self.pos.x), @intFromFloat(self.pos.y), @intFromFloat(self.scl.x), @intFromFloat(self.scl.y), self.clr.r, self.clr.g, self.clr.b, self.clr.a);',
-				]
+
+				if has_scripts(ob):
+					draw.append('	self = objects[%s];' % idx)
+					for txt in get_scripts(ob):
+						draw.append( txt.as_string() )
+					draw += [
+						'	rect(@intFromFloat(self.pos.x), @intFromFloat(self.pos.y), @intFromFloat(self.scl.x), @intFromFloat(self.scl.y), self.clr.r, self.clr.g, self.clr.b, self.clr.a);',
+						'	objects[%s] = self;' % idx,
+					]
+				else:
+					draw += [
+						#'	rect( %s,%s, %s,%s, %s,%s,%s, %s);' %(x,z,w,h,r,g,b,a),
+						'	self = objects[%s];' % idx,
+						'	rect(@intFromFloat(self.pos.x), @intFromFloat(self.pos.y), @intFromFloat(self.scl.x), @intFromFloat(self.scl.y), self.clr.r, self.clr.g, self.clr.b, self.clr.a);',
+					]
 
 	head += [
 		'var objects: [%s]Object2D = undefined;' % len(meshes),
@@ -374,8 +436,16 @@ def build_wasm(world):
 	print(zig)
 	build(zig)
 
+EXAMPLE1 = '''
+self.pos.x += 0.1;
+if (self.pos.x > 800) {
+	self.pos.x = 0;
+}
+'''
 
 def test_scene():
+	txt = bpy.data.texts.new(name='example1.zig')
+	txt.from_string(EXAMPLE1)
 	for y in range(8):
 		for x in range(8):
 			bpy.ops.mesh.primitive_plane_add()
@@ -385,6 +455,8 @@ def test_scene():
 			ob.scale = [16,16,0]
 			ob.rotation_euler.x = math.pi/2
 			ob.color = [1,0,y*0.1,1]
+			if random() < 0.2:
+				ob.zig_script0 = txt
 
 if __name__=='__main__':
 	test_scene()
