@@ -132,6 +132,16 @@ class api {
 		return this.elts.push(e)-1
 	}
 
+	random(){
+		return Math.random()
+	}
+	html_set_text(idx,ptr){
+		this.elts[idx].firstChild.nodeValue=cstr_by_ptr(this.wasm.instance.exports.memory.buffer,ptr)
+	}
+	html_set_hide(idx,f){
+		this.elts[idx].hidden=f
+	}
+
 
 }
 
@@ -292,6 +302,9 @@ for i in range(MAX_SCRIPTS_PER_OBJECT):
 		bpy.props.BoolProperty(name="disable"),
 	)
 
+bpy.types.Object.zig_hide = bpy.props.BoolProperty( name="hidden on spawn")
+
+
 @bpy.utils.register_class
 class ZigObjectPanel(bpy.types.Panel):
 	bl_idname = "OBJECT_PT_Zig_Object_Panel"
@@ -365,6 +378,10 @@ ZIG_HEADER = '''
 extern fn rect(x:c_int,y:c_int, w:c_int,h:c_int, r:u8,g:u8,b:u8, alpha:f32 ) void;
 extern fn html_canvas_resize(x:c_int, y:c_int) void;
 extern fn html_new_text(ptr: [*:0]const u8, x:f32,y:f32, sz:f32, hidden:u8, id: [*:0]const u8) u16;
+extern fn html_set_text(id:u16, ptr: [*:0]const u8) void;
+extern fn html_set_hide(id:u16, flag:u8) void;
+
+extern fn random() f32;
 
 const EntryFunc = *const fn() callconv(.C) void;
 extern fn js_set_entry(ptr:EntryFunc) void;
@@ -426,6 +443,8 @@ def blender_to_zig(world, init_data_in_groups=True):
 
 			cscale = ob.data.size*SCALE
 			hide = 0
+			if ob.zig_hide:
+				hide = 1
 			dom_name = ob.name
 			if dom_name.startswith('_'):
 				dom_name = ''
@@ -434,6 +453,28 @@ def blender_to_zig(world, init_data_in_groups=True):
 				'	objects[%s].id = html_new_text("%s", %s,%s, %s, %s, "%s");' % (idx, ob.data.body, x,z, cscale, hide, dom_name),
 
 			]
+
+			if has_scripts(ob):
+				draw.append('	self = objects[%s];' % idx)
+
+				props = {}
+				for prop in ob.keys():
+					if prop.startswith( ('_', 'zig_') ): continue
+					val = ob[prop]
+					if type(val) is str:
+						head.append('var %s_%s : [*:0]const u8 = "%s";' %(prop,sname, val))
+					else:
+						head.append('var %s_%s : f32 = %s;' %(prop,sname, val))
+					props[prop] = ob[prop]
+
+
+				for txt in get_scripts(ob):
+					s = txt.as_string()
+					for prop in props:
+						if 'self.'+prop in s:
+							s = s.replace('self.'+prop, '%s_%s'%(prop,sname))
+					draw.append( s )
+
 
 
 		elif ob.type=='MESH':
@@ -471,7 +512,11 @@ def blender_to_zig(world, init_data_in_groups=True):
 					props = {}
 					for prop in ob.keys():
 						if prop.startswith( ('_', 'zig_') ): continue
-						head.append('var %s_%s : f32 = %s;' %(prop,sname, ob[prop]))
+						val = ob[prop]
+						if type(val) is str:
+							head.append('var %s_%s : [*:0]const u8 = "%s";' %(prop,sname, val))
+						else:
+							head.append('var %s_%s : f32 = %s;' %(prop,sname, val))
 						props[prop] = ob[prop]
 
 
@@ -509,11 +554,11 @@ def blender_to_zig(world, init_data_in_groups=True):
 
 def build_wasm(world):
 	zig = blender_to_zig(world)
-	print(zig)
+	#print(zig)
 	build(zig)
 
 EXAMPLE1 = '''
-self.pos.x += 0.1;
+self.pos.x += 0.3;
 if (self.pos.x > 800) {
 	self.pos.x = 0;
 }
@@ -526,12 +571,28 @@ if (self.pos.x > 800) {
 }
 '''
 
+EXAMPLE3 = '''
+if (random() < 0.001) {
+	html_set_text(self.id, self.mystring);
+}
+'''
+
+EXAMPLE4 = '''
+if (random() < 0.002) {
+	html_set_hide(self.id, 0);
+}
+'''
+
 
 def test_scene():
 	a = bpy.data.texts.new(name='example1.zig')
 	a.from_string(EXAMPLE1)
 	b = bpy.data.texts.new(name='example2.zig')
 	b.from_string(EXAMPLE2)
+	c = bpy.data.texts.new(name='example3.zig')
+	c.from_string(EXAMPLE3)
+	d = bpy.data.texts.new(name='example4.zig')
+	d.from_string(EXAMPLE4)
 
 	for y in range(8):
 		for x in range(8):
@@ -552,11 +613,25 @@ def test_scene():
 		for x in range(8):
 			bpy.ops.object.text_add()
 			ob = bpy.context.active_object
-			ob.data.body= choice(['🌠', '⭐', '🍔', '🍟', '🍕', '🌭', '🥩', '🥓', '🌯', '🌮'])
+			ob.data.body = choice(['🌠', '⭐', '🍔', '🍟', '🍕', '🌭', '🥩', '🥓', '🌯', '🌮'])
 			ob.data.size *= uniform(0.4, 0.8)
 			ob.location.x = 32 + (x*42)
 			ob.location.z = -(10 + (y*42))
 			ob.location.x += uniform(-5,5)
+
+			if ob.data.body != '⭐':
+				ob.zig_script0 = c
+				ob['mystring'] = '🌠' # choice(['⭐', '🚑'])
+
+	for x,c in enumerate('hello zig'):
+		bpy.ops.object.text_add()
+		ob = bpy.context.active_object
+		ob.data.body = c
+		ob.location.x = 32 + (x*46)
+		ob.location.z = -320
+		ob.zig_hide = True
+		ob.zig_script0 = d
+
 
 if __name__=='__main__':
 	test_scene()
