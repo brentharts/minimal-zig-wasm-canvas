@@ -102,6 +102,11 @@ class api {
 	foo() {
 		window.alert("hello from zig")
 	}
+	rect(x,y,w,h, r,g,b,a){
+		this.ctx.fillStyle='rgba('+r+','+g+','+b+','+a+')';
+		this.ctx.fillRect(x,y,w,h)
+	}
+
 
 }
 
@@ -128,15 +133,26 @@ $d($wasm).then((r)=>{
 
 TEST_WASM_JS = r'''
 extern fn foo() void;
+
 export fn main() void {
 	foo();
 }
 '''
 
+TEST_WASM_CANVAS = r'''
+extern fn rect(x:c_int,y:c_int, w:c_int,h:c_int, r:u8,g:u8,b:u8, alpha:f32 ) void;
+
+export fn main() void {
+	rect(0,0, 320,240, 200,0,0, 1.0);
+}
+'''
+
+
 def build():
 	name = 'test-wasm-foo'
 	tmp = '/tmp/%s.zig' % name
-	open(tmp, 'w').write(TEST_WASM_JS)
+	#open(tmp, 'w').write(TEST_WASM_JS)
+	open(tmp, 'w').write(TEST_WASM_CANVAS)
 	cmd = [
 		ZIG, 'build-exe', 
 		'-O', 'ReleaseSmall', 
