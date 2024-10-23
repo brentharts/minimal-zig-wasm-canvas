@@ -74,6 +74,18 @@ function make_environment(e){
 	});
 }
 
+function cstrlen(m,p){
+	var l=0;
+	while(m[p]!=0){l++;p++}
+	return l;
+}
+
+function cstr_by_ptr(m,p){
+	const l=cstrlen(new Uint8Array(m),p);
+	const b=new Uint8Array(m,p,l);
+	return new TextDecoder().decode(b)
+}
+
 class api {
 	proxy(){
 		return make_environment(this)
@@ -109,6 +121,17 @@ class api {
 		this.canvas.width=w;
 		this.canvas.height=h
 	}
+
+	html_new_text(ptr,r,g,b,h,id){
+		var e=document.createElement('pre');
+		e.style='position:absolute;left:'+r+';top:'+g+';font-size:'+b;
+		e.hidden=h;
+		e.id=cstr_by_ptr(this.wasm.instance.exports.memory.buffer,id);
+		document.body.append(e);
+		e.append(cstr_by_ptr(this.wasm.instance.exports.memory.buffer,ptr));
+		return this.elts.push(e)-1
+	}
+
 
 }
 
@@ -253,7 +276,7 @@ if __name__=='__main__':
 
 ## in blender ##
 import math, mathutils
-from random import random, uniform
+from random import random, uniform, choice
 
 MAX_SCRIPTS_PER_OBJECT = 8
 
@@ -341,6 +364,7 @@ def has_scripts(ob):
 ZIG_HEADER = '''
 extern fn rect(x:c_int,y:c_int, w:c_int,h:c_int, r:u8,g:u8,b:u8, alpha:f32 ) void;
 extern fn html_canvas_resize(x:c_int, y:c_int) void;
+extern fn html_new_text(ptr: [*:0]const u8, x:f32,y:f32, sz:f32, hidden:u8, id: [*:0]const u8) u16;
 
 const EntryFunc = *const fn() callconv(.C) void;
 extern fn js_set_entry(ptr:EntryFunc) void;
@@ -361,12 +385,13 @@ const Object2D = struct {
 	pos: Vec2D,
 	scl: Vec2D,
 	clr: Color,
+	id : u16,
 };
 
 '''
 
-
-def blender_to_zig(world):
+SCALE = 100
+def blender_to_zig(world, init_data_in_groups=True):
 	head = [ZIG_HEADER]
 	setup = [
 		'export fn main() void {',
@@ -375,6 +400,11 @@ def blender_to_zig(world):
 
 
 	]
+
+	setup_pos = []
+	setup_scl = []
+	setup_clr = []
+
 	draw = [
 		'export fn game_frame() void {',
 		'	var self:Object2D = undefined;',
@@ -384,7 +414,29 @@ def blender_to_zig(world):
 		if ob.hide_get(): continue
 		sname = safename(ob)
 		idx = len(meshes)
-		if ob.type=='MESH':
+		if ob.type=='FONT':
+			meshes.append(ob)
+			x,y,z = ob.location
+			z = int(-z)
+			x = int(x)
+			if init_data_in_groups:
+				setup_pos.append('objects[%s].pos=Vec2D{.x=%s,.y=%s};' % (idx,x,z))
+			else:
+				setup.append('objects[%s].pos=Vec2D{.x=%s,.y=%s};' % (idx,x,z))
+
+			cscale = ob.data.size*SCALE
+			hide = 0
+			dom_name = ob.name
+			if dom_name.startswith('_'):
+				dom_name = ''
+
+			setup += [
+				'	objects[%s].id = html_new_text("%s", %s,%s, %s, %s, "%s");' % (idx, ob.data.body, x,z, cscale, hide, dom_name),
+
+			]
+
+
+		elif ob.type=='MESH':
 			if len(ob.data.vertices)==4: ## assume plane
 				meshes.append(ob)
 				x,y,z = ob.location
@@ -400,16 +452,36 @@ def blender_to_zig(world):
 				g = int(g*255)
 				b = int(b*255)
 
-				setup += [
-					'objects[%s].pos=Vec2D{.x=%s,.y=%s};' % (idx,x,z),
-					'objects[%s].scl=Vec2D{.x=%s,.y=%s};' % (idx,w,h),
-					'objects[%s].clr=Color{.r=%s,.g=%s,.b=%s,.a=%s};' % (idx,r,g,b,a),
-				]
+
+				if init_data_in_groups:
+					setup_pos.append('objects[%s].pos=Vec2D{.x=%s,.y=%s};' % (idx,x,z))
+					setup_scl.append('objects[%s].scl=Vec2D{.x=%s,.y=%s};' % (idx,w,h))
+					setup_clr.append('objects[%s].clr=Color{.r=%s,.g=%s,.b=%s,.a=%s};' % (idx,r,g,b,a))
+				else:
+					setup += [
+						'objects[%s].pos=Vec2D{.x=%s,.y=%s};' % (idx,x,z),
+						'objects[%s].scl=Vec2D{.x=%s,.y=%s};' % (idx,w,h),
+						'objects[%s].clr=Color{.r=%s,.g=%s,.b=%s,.a=%s};' % (idx,r,g,b,a),
+					]
+
 
 				if has_scripts(ob):
 					draw.append('	self = objects[%s];' % idx)
+
+					props = {}
+					for prop in ob.keys():
+						if prop.startswith( ('_', 'zig_') ): continue
+						head.append('var %s_%s : f32 = %s;' %(prop,sname, ob[prop]))
+						props[prop] = ob[prop]
+
+
 					for txt in get_scripts(ob):
-						draw.append( txt.as_string() )
+						s = txt.as_string()
+						for prop in props:
+							if 'self.'+prop in s:
+								s = s.replace('self.'+prop, '%s_%s'%(prop,sname))
+						draw.append( s )
+
 					draw += [
 						'	rect(@intFromFloat(self.pos.x), @intFromFloat(self.pos.y), @intFromFloat(self.scl.x), @intFromFloat(self.scl.y), self.clr.r, self.clr.g, self.clr.b, self.clr.a);',
 						'	objects[%s] = self;' % idx,
@@ -426,6 +498,10 @@ def blender_to_zig(world):
 	]
 
 	draw.append('}')
+
+	if init_data_in_groups:
+		setup += setup_scl + setup_clr + setup_pos
+
 	setup.append('}')
 
 	return '\n'.join(head+setup+draw)
@@ -443,9 +519,20 @@ if (self.pos.x > 800) {
 }
 '''
 
+EXAMPLE2 = '''
+self.pos.x += self.speed;
+if (self.pos.x > 800) {
+	self.pos.x = 0;
+}
+'''
+
+
 def test_scene():
-	txt = bpy.data.texts.new(name='example1.zig')
-	txt.from_string(EXAMPLE1)
+	a = bpy.data.texts.new(name='example1.zig')
+	a.from_string(EXAMPLE1)
+	b = bpy.data.texts.new(name='example2.zig')
+	b.from_string(EXAMPLE2)
+
 	for y in range(8):
 		for x in range(8):
 			bpy.ops.mesh.primitive_plane_add()
@@ -456,7 +543,20 @@ def test_scene():
 			ob.rotation_euler.x = math.pi/2
 			ob.color = [1,0,y*0.1,1]
 			if random() < 0.2:
-				ob.zig_script0 = txt
+				ob.zig_script0 = a
+			elif random() < 0.2:
+				ob.zig_script0 = b
+				ob['speed'] = 0.5
+
+	for y in range(6):
+		for x in range(8):
+			bpy.ops.object.text_add()
+			ob = bpy.context.active_object
+			ob.data.body= choice(['🌠', '⭐', '🍔', '🍟', '🍕', '🌭', '🥩', '🥓', '🌯', '🌮'])
+			ob.data.size *= uniform(0.4, 0.8)
+			ob.location.x = 32 + (x*42)
+			ob.location.z = -(10 + (y*42))
+			ob.location.x += uniform(-5,5)
 
 if __name__=='__main__':
 	test_scene()
