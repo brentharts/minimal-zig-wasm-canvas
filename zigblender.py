@@ -101,6 +101,15 @@ class api {
 		this.ctx.fillStyle='rgba('+r+','+g+','+b+','+a+')';
 		this.ctx.fillRect(x,y,w,h)
 	}
+	js_set_entry(f){
+		this.entryFunction=this.wasm.instance.exports.__indirect_function_table.get(f)
+	}
+
+	html_canvas_resize(w,h){
+		this.canvas.width=w;
+		this.canvas.height=h
+	}
+
 
 
 }
@@ -119,11 +128,12 @@ var $d=async(u,t)=>{
 	else return await o.arrayBuffer()
 }
 
-$d($wasm).then((r)=>{
-	console.log(r);
-	WebAssembly.instantiate(r,{env:$.proxy()}).then((c)=>{$.reset(c,"$",r)});
+$d($0,1).then((j)=>{
+	$=eval(j)
+	$d($1).then((r)=>{
+		WebAssembly.instantiate(r,{env:$.proxy()}).then((c)=>{$.reset(c,"$",r)});
+	});
 });
-
 '''
 
 
@@ -140,7 +150,7 @@ export fn main() void {
 '''
 
 
-def build(zig):
+def build(zig, memsize=4):
 	name = 'test-wasm-foo'
 	tmp = '/tmp/%s.zig' % name
 	open(tmp, 'w').write(zig)
@@ -150,7 +160,7 @@ def build(zig):
 		'-target', 'wasm32-freestanding-musl',
 		'-fno-entry',
 		'--export-table', '-rdynamic',
-		'--initial-memory=%s' % (1024*1024),
+		'--initial-memory=%s' % (1024*1024*memsize),
 		tmp
 	]
 	print(cmd)
@@ -166,14 +176,23 @@ def build(zig):
 	w = open(wasm+'.gz','rb').read()
 	b = base64.b64encode(w).decode('utf-8')
 
+	jtmp = '/tmp/zigapi.js'
+	open(jtmp,'w').write(JS_API)
+	cmd = ['gzip', '--keep', '--force', '--verbose', '--best', jtmp]
+	print(cmd)
+	subprocess.check_call(cmd)
+	js = open(jtmp+'.gz','rb').read()
+	jsb = base64.b64encode(js).decode('utf-8')
+
 
 	o = [
 		'<html>',
 		'<body>',
 		'<canvas id="$"></canvas>',
 		'<script>', 
-		JS_API,
-		'var $wasm="%s"' % b,
+		#JS_API,
+		'var $0="%s"' % jsb,
+		'var $1="%s"' % b,
 		JS_DECOMP,
 		'</script>',
 	]
@@ -181,6 +200,13 @@ def build(zig):
 	out = 'zigblender.html'
 	open(out,'w').write('\n'.join(o))
 	webbrowser.open(out)
+
+	cmd = ['zip', '-9', 'zigblender.zip', 'zigblender.html']
+	print(cmd)
+	subprocess.check_call(cmd)
+	os.system('ls -l zigblender.*')
+	os.system('ls -l /tmp/*.wasm')
+
 
 try:
 	import bpy
@@ -233,9 +259,9 @@ import math, mathutils
 from random import random, uniform
 
 @bpy.utils.register_class
-class C3Export(bpy.types.Operator):
-	bl_idname = "c3.export_wasm"
-	bl_label = "C3 Export WASM"
+class ZigExport(bpy.types.Operator):
+	bl_idname = "zig.export_wasm"
+	bl_label = "Zig Export WASM"
 	@classmethod
 	def poll(cls, context):
 		return True
@@ -259,21 +285,56 @@ class ZigWorldPanel(bpy.types.Panel):
 def safename(ob):
 	return ob.name.lower().replace('.', '_')
 
+
 ZIG_HEADER = '''
 extern fn rect(x:c_int,y:c_int, w:c_int,h:c_int, r:u8,g:u8,b:u8, alpha:f32 ) void;
+extern fn html_canvas_resize(x:c_int, y:c_int) void;
+
+const EntryFunc = *const fn() callconv(.C) void;
+extern fn js_set_entry(ptr:EntryFunc) void;
+
+const Vec2D = struct {
+	x: f32,
+	y: f32,
+};
+
+const Color = struct {
+	r: u8,
+	g: u8,
+	b: u8,
+	a: f32,
+};
+
+const Object2D = struct {
+	pos: Vec2D,
+	scl: Vec2D,
+	clr: Color,
+};
 
 '''
 
-def blender_to_c3(world):
+
+def blender_to_zig(world):
 	head = [ZIG_HEADER]
-	setup = []
-	draw = ['export fn main() void {']
+	setup = [
+		'export fn main() void {',
+		'	html_canvas_resize(%s, %s);' % (800,600),
+		'	js_set_entry(&game_frame);',
+
+
+	]
+	draw = [
+		'export fn game_frame() void {',
+		'	var self:Object2D = undefined;',
+	]
+	meshes = []
 	for ob in bpy.data.objects:
 		if ob.hide_get(): continue
-		print(ob)
 		sname = safename(ob)
+		idx = len(meshes)
 		if ob.type=='MESH':
 			if len(ob.data.vertices)==4: ## assume plane
+				meshes.append(ob)
 				x,y,z = ob.location
 				z = int(-z)
 				x = int(x)
@@ -286,18 +347,30 @@ def blender_to_c3(world):
 				r = int(r*255)
 				g = int(g*255)
 				b = int(b*255)
-				draw += [
-					'	rect( %s,%s, %s,%s, %s,%s,%s, %s);' %(x,z,w,h,r,g,b,a),
 
+				setup += [
+					'objects[%s].pos=Vec2D{.x=%s,.y=%s};' % (idx,x,z),
+					'objects[%s].scl=Vec2D{.x=%s,.y=%s};' % (idx,w,h),
+					'objects[%s].clr=Color{.r=%s,.g=%s,.b=%s,.a=%s};' % (idx,r,g,b,a),
+				]
+				draw += [
+					#'	rect( %s,%s, %s,%s, %s,%s,%s, %s);' %(x,z,w,h,r,g,b,a),
+					'	self = objects[%s];' % idx,
+					'	rect(@intFromFloat(self.pos.x), @intFromFloat(self.pos.y), @intFromFloat(self.scl.x), @intFromFloat(self.scl.y), self.clr.r, self.clr.g, self.clr.b, self.clr.a);',
 				]
 
+	head += [
+		'var objects: [%s]Object2D = undefined;' % len(meshes),
+	]
+
 	draw.append('}')
+	setup.append('}')
 
 	return '\n'.join(head+setup+draw)
 
 
 def build_wasm(world):
-	zig = blender_to_c3(world)
+	zig = blender_to_zig(world)
 	print(zig)
 	build(zig)
 
