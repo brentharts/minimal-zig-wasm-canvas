@@ -142,6 +142,23 @@ class api {
 		this.elts[idx].hidden=f
 	}
 
+	html_draw_lines(ptr,l,t,fill,r,g,b,a){
+		const buf=this.wasm.instance.exports.memory.buffer;
+		const p=new Float32Array(buf,ptr,l);
+		this.ctx.strokeStyle='black';
+		if(fill)this.ctx.fillStyle='rgba('+r+','+g+','+b+','+a+')';
+		this.ctx.lineWidth=t;
+		this.ctx.beginPath();
+		this.ctx.moveTo(p[0],p[1]);
+		for(var i=2;i<p.length;i+=2)this.ctx.lineTo(p[i],p[i+1]);
+		if(fill){
+			this.ctx.closePath();
+			this.ctx.fill()
+		}
+		this.ctx.stroke()
+	}
+
+
 
 }
 
@@ -373,6 +390,14 @@ def has_scripts(ob):
 		if txt: return True
 	return False
 
+def calc_stroke_width(stroke):
+	sw = 0.0
+	for p in stroke.points:
+		sw += p.pressure
+		#sw += p.strength
+	sw /= len(stroke.points)
+	return sw * stroke.line_width * 0.05
+
 
 ZIG_HEADER = '''
 extern fn rect(x:c_int,y:c_int, w:c_int,h:c_int, r:u8,g:u8,b:u8, alpha:f32 ) void;
@@ -381,11 +406,18 @@ extern fn html_new_text(ptr: [*:0]const u8, x:f32,y:f32, sz:f32, hidden:u8, id: 
 extern fn html_set_text(id:u16, ptr: [*:0]const u8) void;
 extern fn html_set_hide(id:u16, flag:u8) void;
 
+//extern fn html_draw_lines (ptr: [*c]Vec2D, len:u16, thick:f32, use_fill:u8, r:u8,g:u8,b:u8, a:f32) void;
+//extern fn test_draw_lines (ptr: [*]Vec2D ) void;
+//extern fn test_draw_lines (ptr: [*]const f32 ) void;
+extern fn html_draw_lines (ptr: [*]const f32, len:u16, thick:f32, use_fill:u8, r:u8,g:u8,b:u8, a:f32) void;
+
+
 extern fn random() f32;
 
 const EntryFunc = *const fn() callconv(.C) void;
 extern fn js_set_entry(ptr:EntryFunc) void;
 
+//const Vec2D = extern struct {
 const Vec2D = struct {
 	x: f32,
 	y: f32,
@@ -408,6 +440,55 @@ const Object2D = struct {
 '''
 
 SCALE = 100
+
+def grease_to_zig(ob, datas, head, draw, setup, scripts, obj_index):
+	sx,sy,sz = ob.scale * SCALE
+	x,y,z = ob.location # * SCALE
+
+	dname = safename(ob.data)
+
+	if dname not in datas:
+		datas[dname]={'orig-points':0, 'total-points':0, 'draw':[]}
+		data = []
+		for lidx, layer in enumerate( ob.data.layers ):
+			for sidx, stroke in enumerate( layer.frames[0].strokes ):
+				datas[dname]['orig-points'] += len(stroke.points)
+				mat = ob.data.materials[stroke.material_index]
+				use_fill = 0
+				if mat.grease_pencil.show_fill: use_fill = 1
+				points = stroke.points
+				s = []
+				for pnt in points:
+					x1,y1,z1 = pnt.co * SCALE
+					#x1 += 100
+					z1 += z
+					x1 += x
+					#s.append('.{%s,%s}' % (x1,-z1))
+					s.append('%s' % (x1))
+					s.append('%s' % (-z1))
+
+				## zig error: does not support array initialization syntax
+				#data.append('const __%s__%s_%s : [%s]Vec2D = .{%s};' % (dname, lidx, sidx, len(points), ','.join(s) ))
+				n = len(s)
+				data.append('const __%s__%s_%s : [%s]f32 = .{%s};' % (dname, lidx, sidx, n, ','.join(s) ))
+
+				r,g,b,a = mat.grease_pencil.fill_color
+				swidth = calc_stroke_width(stroke)
+				datas[dname]['draw'].append({'layer':lidx, 'index':sidx, 'length':n, 'width':swidth, 'fill':use_fill, 'color':[r,g,b,a]})
+
+		head += data
+
+
+	for a in datas[dname]['draw']:
+		r,g,b,alpha = a['color']
+		r = int(r*255)
+		g = int(g*255)
+		b = int(b*255)
+		#draw.append('	test_draw_lines(&__%s__%s_%s);' % (dname, a['layer'], a['index']))
+		draw.append('	html_draw_lines(&__%s__%s_%s, %s, %s, %s, %s,%s,%s,%s);' % (dname, a['layer'], a['index'], a['length'], a['width'], a['fill'], r,g,b,alpha))
+
+
+
 def blender_to_zig(world, init_data_in_groups=True):
 	head = [ZIG_HEADER]
 	setup = [
@@ -422,6 +503,8 @@ def blender_to_zig(world, init_data_in_groups=True):
 	setup_scl = []
 	setup_clr = []
 
+	datas = {}
+
 	draw = [
 		'export fn game_frame() void {',
 		'	var self:Object2D = undefined;',
@@ -431,7 +514,16 @@ def blender_to_zig(world, init_data_in_groups=True):
 		if ob.hide_get(): continue
 		sname = safename(ob)
 		idx = len(meshes)
-		if ob.type=='FONT':
+		if ob.type=='GPENCIL':
+			if has_scripts(ob):
+				setup.append('	objects[%s].position={%s,%s};' % (idx, x,z))
+				sx,sy,sz = ob.scale
+				setup.append('	objects[%s].scale={%s,%s};' % (idx, sx,sz))
+
+			scripts = []
+			grease_to_zig(ob, datas, head, draw, setup, scripts, idx)
+
+		elif ob.type=='FONT':
 			meshes.append(ob)
 			x,y,z = ob.location
 			z = int(-z)
@@ -462,6 +554,7 @@ def blender_to_zig(world, init_data_in_groups=True):
 					if prop.startswith( ('_', 'zig_') ): continue
 					val = ob[prop]
 					if type(val) is str:
+						#head.append('const %s_%s : [*:0]const u8 = "%s";' %(prop,sname, val))  ## in c3 const was smaller, in zig var is smaller?
 						head.append('var %s_%s : [*:0]const u8 = "%s";' %(prop,sname, val))
 					else:
 						head.append('var %s_%s : f32 = %s;' %(prop,sname, val))
@@ -631,6 +724,11 @@ def test_scene():
 		ob.location.z = -320
 		ob.zig_hide = True
 		ob.zig_script0 = d
+
+	bpy.ops.object.gpencil_add(type='MONKEY')
+	ob = bpy.context.active_object
+	ob.location.x = 600
+	ob.location.z = -150
 
 
 if __name__=='__main__':
