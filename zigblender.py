@@ -121,6 +121,10 @@ class api {
 		this.canvas.width=w;
 		this.canvas.height=h
 	}
+	html_canvas_clear(){
+		this.ctx.clearRect(0,0,this.canvas.width,this.canvas.height)
+	}
+
 
 	html_new_text(ptr,r,g,b,h,id){
 		var e=document.createElement('pre');
@@ -197,6 +201,13 @@ export fn main() void {
 }
 '''
 
+def wasm_opt(wasm):
+	o = wasm.replace('.wasm', '.opt.wasm')
+	cmd = ['wasm-opt', '-o',o, '-Oz', wasm]
+	print(cmd)
+	subprocess.check_call(cmd)
+	return o
+
 
 def build(zig, memsize=4):
 	name = 'test-wasm-foo'
@@ -217,6 +228,8 @@ def build(zig, memsize=4):
 	os.system('ls -l /tmp/*.wasm')
 
 	wasm = '/tmp/%s.wasm' % name
+	wasm = wasm_opt(wasm)
+
 	cmd = ['gzip', '--keep', '--force', '--verbose', '--best', wasm]
 	print(cmd)
 	subprocess.check_call(cmd)
@@ -402,6 +415,9 @@ def calc_stroke_width(stroke):
 ZIG_HEADER = '''
 extern fn rect(x:c_int,y:c_int, w:c_int,h:c_int, r:u8,g:u8,b:u8, alpha:f32 ) void;
 extern fn html_canvas_resize(x:c_int, y:c_int) void;
+extern fn html_canvas_clear() void;
+
+
 extern fn html_new_text(ptr: [*:0]const u8, x:f32,y:f32, sz:f32, hidden:u8, id: [*:0]const u8) u16;
 extern fn html_set_text(id:u16, ptr: [*:0]const u8) void;
 extern fn html_set_hide(id:u16, flag:u8) void;
@@ -505,10 +521,14 @@ def blender_to_zig(world, init_data_in_groups=True):
 
 	datas = {}
 
-	draw = [
+	draw_header = [
 		'export fn game_frame() void {',
-		'	var self:Object2D = undefined;',
+		#'	var self:Object2D = undefined;',  ## only added when needed
+		'	html_canvas_clear();',
+
 	]
+	draw = []
+
 	meshes = []
 	for ob in bpy.data.objects:
 		if ob.hide_get(): continue
@@ -635,6 +655,9 @@ def blender_to_zig(world, init_data_in_groups=True):
 		'var objects: [%s]Object2D = undefined;' % len(meshes),
 	]
 
+	if 'self' in '\n'.join(draw):
+		draw_header.append('	var self:Object2D = undefined;')
+
 	draw.append('}')
 
 	if init_data_in_groups:
@@ -642,7 +665,7 @@ def blender_to_zig(world, init_data_in_groups=True):
 
 	setup.append('}')
 
-	return '\n'.join(head+setup+draw)
+	return '\n'.join( head + setup + draw_header + draw)
 
 
 def build_wasm(world):
@@ -732,5 +755,12 @@ def test_scene():
 
 
 if __name__=='__main__':
-	test_scene()
+	if '--monkey' in sys.argv:
+		bpy.ops.object.gpencil_add(type='MONKEY')
+		ob = bpy.context.active_object
+		ob.location.x = 100
+		ob.location.z = -150
+	else:
+		test_scene()
+
 	build_wasm(bpy.data.worlds[0])
